@@ -18,7 +18,6 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 socketio = SocketIO(app, cors_allowed_origins='*')
 webdrivers = {}
-client_auths = {}
 url = None
 
 # chrome_options = Options()
@@ -37,7 +36,6 @@ def verify():
     if request.method == 'POST':
         data = request.get_json()
         print(f"data {data}")
-        client_auths[data['sid']] = data
         socketio.emit('credentials', data, room=data['sid'])
         return f"data received {data}"
     else:
@@ -57,7 +55,7 @@ def on_connect():
         emit('connected', client_sid)
     except Exception as e:
         print(f"Client {client_sid}, error: {e}")
-        emit('error', client_sid)
+        emit('error', e)
 
 @socketio.on('disconnect')
 def on_disconnect():
@@ -73,7 +71,7 @@ def on_disconnect():
         leave_room(client_sid)
     except Exception as e:
         print(f"Client {client_sid}, error: {e}")
-        emit('error', client_sid)
+        emit('error', e)
 
 @socketio.on('load')
 def load(data):
@@ -81,12 +79,18 @@ def load(data):
         client_sid = request.sid
         driver = webdrivers.get(client_sid)
         driver.get(data['url'])
-        driver.implicitly_wait(5)
+        wait = WebDriverWait(driver, 20)
+        length = len(data['text'])
+        if (length):
+            # FIXME: generalize this for ID type also
+            wait.until(EC.text_to_be_present_in_element((By.CLASS_NAME, data['expected']), data['text']))
+        else:
+            driver.implicitly_wait(5)
         print(f"client sid {client_sid} driver sid {driver.session_id} url {data['url']}")
         emit('loaded', {'url': driver.current_url, 'code': data['code']})
     except Exception as e:
         print(f"Client {client_sid}, error: {e}")
-        emit('error', client_sid)
+        emit('error', data['code'])
 
 @socketio.on('pageSource')
 def pageSource():
@@ -96,7 +100,7 @@ def pageSource():
         emit('page_source', json.dumps(driver.page_source))
     except Exception as e:
         print(f"Client {client_sid}, error: {e}")
-        emit('error', client_sid)
+        emit('error', e)
 
 @socketio.on('sendEvent')
 def sendEvent(data):
@@ -108,6 +112,9 @@ def sendEvent(data):
         element = None
         for e in elements:
             print(f"load {e['element']} {e['value']} {e['type']} {e['action']}")
+            if ('skip' in e):
+                print(f"taking no action on {e['element']}")
+                continue
             if 'id' in e['type']:
                 element = driver.find_element(By.ID, e['element'])
             elif 'class' in e['type']:
@@ -156,54 +163,7 @@ def sendEvent(data):
         emit('event_done', data['eventCode'])
     except Exception as e:
         print(f"Client {client_sid}, error: {e}")
-        #emit('error', client_sid)
-
-@socketio.on('getCredentials')
-def on_getCredentials(data):
-    try:
-        client_sid = request.sid
-        print(f"getting creadentials {data['pin']} {client_auths[client_sid]['pin']}")
-        response = client_auths[client_sid]
-        if(data['pin'] == client_auths[client_sid]['pin']):
-            response['statuscode'] = 200
-        else:
-            response['statuscode'] = 403
-        emit('credentials', response)
-    except Exception as e:
-        print(f"Client {client_sid}, error: {e}")
-        emit('error', e)
-
-@socketio.on('login')
-def login(data):
-    try:
-        client_sid = None
-        element = None
-        for key in data:
-            print("KEY "+key+" "+data[key])
-            client_sid = request.sid
-            driver = webdrivers.get(client_sid)
-            element = driver.find_element(By.ID, str(key))
-            element.send_keys(str(data[key]))
-        element.submit()
-        wait = WebDriverWait(driver, 20)
-        # wait.until(EC.url_matches("https://connect.jeep.com/us/en/dashboard"))
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'card-body')))
-        elements = driver.find_elements(By.CLASS_NAME, "card-footer")
-        data = []
-        for element in elements:
-            subelement = element.find_element(By.TAG_NAME, 'a')
-            href = subelement.get_attribute("href")
-            title = subelement.get_attribute("title")
-            print("href "+href+"\ntitle "+title)
-            response = {
-                'title': title,
-                'link': href
-            }
-            data.append(response)
-        emit('features', json.dumps(data))
-    except Exception as e:
-        print(f"Client {client_sid}, error: {e}")
-        emit('error', client_sid)
+        emit('error', data['eventCode'])
 
 if __name__ == '__main__':
     socketio.run(app)
